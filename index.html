@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Material Studio</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#171a1f;color:#eee;font:14px Segoe UI,Arial;overflow:hidden}
+#app{display:grid;grid-template-columns:260px 1fr 285px;height:100vh}
+.panel{background:#20242a;padding:14px;overflow:auto}.title{font-size:20px;font-weight:700;margin-bottom:4px}.sub{color:#9ea7b2;margin-bottom:18px}
+label{display:block;color:#aeb7c1;font-weight:600;margin:12px 0 5px}
+button,select,input{width:100%;border:1px solid #3c434d;background:#292f37;color:#eee;border-radius:6px;padding:9px;margin-bottom:7px}
+button{cursor:pointer}button:hover{background:#353d47}.primary{background:#2674d9;border-color:#3184ef;font-weight:700}
+input[type=range]{padding:0}.drop{border:1px dashed #596473;padding:10px;text-align:center;border-radius:6px;color:#aeb7c1}
+#viewport{position:relative;background:#8ccdf2}.hud{position:absolute;top:12px;left:12px;background:#0009;padding:8px;border-radius:5px;pointer-events:none}
+#hint{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:#0009;padding:8px 12px;border-radius:5px}
+.small{font-size:12px;color:#9ea7b2}.row{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+#recording{display:none;position:fixed;inset:0;z-index:20;background:#0000;border:3px solid #f44;pointer-events:none}
+#recLabel{position:absolute;top:12px;right:12px;background:#900;padding:8px;border-radius:5px}
+body.presentation #app .panel{display:none}body.presentation #app{display:block}body.presentation #viewport{height:100vh}
+body.presentation #recording{display:block}
+</style>
+</head>
+<body>
+<div id="app">
+<aside class="panel">
+<div class="title">MATERIAL STUDIO</div><div class="sub">Editor PBR 3D</div>
+<label>Modelo</label>
+<select id="shape"><option value="cube">Cubo</option><option value="sphere">Esfera</option><option value="cylinder">Cilindro</option><option value="plane">Plano</option></select>
+<label>Cara / material</label><select id="face"></select>
+<button id="auto">🔄 Giro automático: OFF</button>
+<label>Albedo</label><input id="albedo" type="file" accept="image/*"><div class="small" id="albedoName">Ninguno</div>
+<label>Normal</label><input id="normal" type="file" accept="image/*"><div class="small" id="normalName">Ninguno</div>
+<label>AO</label><input id="ao" type="file" accept="image/*"><div class="small" id="aoName">Ninguno</div>
+<label>Metallic</label><input id="metal" type="range" min="0" max="1" step=".01" value="0">
+<label>Roughness</label><input id="rough" type="range" min=".03" max="1" step=".01" value=".5">
+<button id="record" class="primary">🎥 GRABAR / PRESENTACIÓN (G)</button>
+<button id="save">💾 Guardar PNG</button>
+<label>HDRI / entorno</label><input id="hdri" type="file" accept=".hdr,.exr,image/*"><div class="small" id="hdriName">Cielo celeste</div>
+<div class="drop" id="drop">Arrastrá una textura aquí</div>
+</aside>
+<main id="viewport"><div class="hud" id="status">Cara: ninguna</div><div id="hint">Clic en una cara para seleccionarla · G = pantalla completa</div></main>
+<aside class="panel">
+<div class="title">Iluminación</div>
+<label>Sol</label><input id="sun" type="range" min="0" max="5" step=".01" value="2">
+<label>Ángulo del sol</label><input id="sunAngle" type="range" min="-180" max="180" value="35">
+<label>Elevación</label><input id="sunElev" type="range" min="-90" max="90" value="35">
+<label>Entorno / cielo</label><input id="sky" type="range" min="0" max="3" step=".01" value="1">
+<label>Rotación X</label><input id="rx" type="range" min="-180" max="180" value="20">
+<label>Rotación Y</label><input id="ry" type="range" min="-180" max="180" value="25">
+<label>Zoom</label><input id="zoom" type="range" min="1.5" max="8" step=".01" value="3.2">
+<hr>
+<div class="small">PBR por cara: cada selección conserva su propio Albedo, Normal, AO, Metallic y Roughness.</div>
+</aside>
+</div>
+<div id="recording"><div id="recLabel">● PRESENTACIÓN / GRABACIÓN · G para terminar</div></div>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+const viewport=document.querySelector('#viewport');
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x8ccdf2);
+const camera=new THREE.PerspectiveCamera(45,1,.05,100);
+camera.position.set(0,0,3.2);
+const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setSize(viewport.clientWidth,viewport.clientHeight);
+renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.shadowMap.enabled=true; viewport.appendChild(renderer.domElement);
+const controls=new OrbitControls(camera,renderer.domElement); controls.enableDamping=true;
+const group=new THREE.Group(); scene.add(group);
+
+const hemi=new THREE.HemisphereLight(0x9fdcff,0x28303a,1);
+const sun=new THREE.DirectionalLight(0xffffff,2); sun.castShadow=true; scene.add(hemi,sun);
+
+const loader=new THREE.TextureLoader();
+let object,auto=false,selected=-1,materials=[];
+const maps={albedo:null,normal:null,ao:null};
+const face=document.querySelector('#face');
+
+function makeMaterial(i){
+ const m=new THREE.MeshStandardMaterial({color:0xb7bcc2,metalness:.0,roughness:.5});
+ m.userData.face=i; return m;
+}
+function setFaceOptions(n){
+ face.innerHTML=''; for(let i=0;i<n;i++){let o=document.createElement('option');o.value=i;o.textContent='Cara '+(i+1);face.appendChild(o)}
+}
+function build(){
+ if(object) group.remove(object);
+ const type=document.querySelector('#shape').value;
+ let geo;
+ if(type==='cube') geo=new THREE.BoxGeometry(1.8,1.8,1.8);
+ if(type==='sphere') geo=new THREE.SphereGeometry(1,64,32);
+ if(type==='cylinder') geo=new THREE.CylinderGeometry(.9,.9,1.8,64);
+ if(type==='plane') geo=new THREE.PlaneGeometry(2.6,2.6);
+ const count=type==='cube'?6:1; materials=Array.from({length:count},(_,i)=>makeMaterial(i));
+ object=new THREE.Mesh(geo,materials); object.castShadow=true; object.receiveShadow=true; group.add(object);
+ setFaceOptions(count); selected=-1; updateStatus();
+}
+function updateStatus(){document.querySelector('#status').textContent=selected<0?'Cara: ninguna':'Cara seleccionada: '+(selected+1)}
+function selectedMat(){return selected>=0?materials[selected]:null}
+function loadMap(input,key){
+ input.onchange=()=>{
+  const f=input.files[0]; if(!f)return;
+  document.querySelector('#'+key+'Name').textContent=f.name;
+  const url=URL.createObjectURL(f); loader.load(url,t=>{
+   if(key==='albedo'){t.colorSpace=THREE.SRGBColorSpace}
+   if(key==='normal'){t.colorSpace=THREE.NoColorSpace}
+   const m=selectedMat(); if(!m)return;
+   if(key==='albedo')m.map=t,m.color.set(0xffffff);
+   if(key==='normal')m.normalMap=t;
+   if(key==='ao')m.aoMap=t,m.aoMapIntensity=1;
+   m.needsUpdate=true;
+  });
+ };
+}
+loadMap(document.querySelector('#albedo'),'albedo');loadMap(document.querySelector('#normal'),'normal');loadMap(document.querySelector('#ao'),'ao');
+
+function updatePBR(){
+ const m=selectedMat(); if(!m)return;
+ m.metalness=+metal.value;m.roughness=+rough.value;m.needsUpdate=true;
+}
+const metal=document.querySelector('#metal'),rough=document.querySelector('#rough');
+metal.oninput=rough.oninput=updatePBR;
+face.onchange=()=>{selected=+face.value;const m=selectedMat();if(m){metal.value=m.metalness;rough.value=m.roughness}updateStatus()};
+document.querySelector('#shape').onchange=build;
+document.querySelector('#auto').onclick=()=>{auto=!auto;document.querySelector('#auto').textContent='🔄 Giro automático: '+(auto?'ON':'OFF')};
+
+const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
+renderer.domElement.addEventListener('pointerdown',e=>{
+ const r=renderer.domElement.getBoundingClientRect();
+ mouse.x=((e.clientX-r.left)/r.width)*2-1;mouse.y=-((e.clientY-r.top)/r.height)*2+1;
+ ray.setFromCamera(mouse,camera);const hits=ray.intersectObject(object,false);
+ if(hits.length){selected=object.geometry.index?Math.floor(hits[0].faceIndex/(object.geometry.groups?.length||1)):0;
+  if(object.geometry.type==='BoxGeometry')selected=Math.floor(hits[0].faceIndex/2);
+  selected=Math.max(0,Math.min(materials.length-1,selected));face.value=selected;
+  const m=selectedMat();metal.value=m.metalness;rough.value=m.roughness;updateStatus();
+ }
+});
+['albedo','normal','ao'].forEach(k=>{
+ const el=document.querySelector('#'+k); el.addEventListener('dragover',e=>e.preventDefault());
+});
+document.querySelector('#drop').addEventListener('dragover',e=>{e.preventDefault();e.currentTarget.style.borderColor='#4c9fff'});
+document.querySelector('#drop').addEventListener('drop',e=>{
+ e.preventDefault();const f=e.dataTransfer.files[0];if(!f)return;
+ const input=document.querySelector('#albedo');const dt=new DataTransfer();dt.items.add(f);input.files=dt.files;input.dispatchEvent(new Event('change'));
+});
+
+document.querySelector('#sun').oninput=e=>sun.intensity=+e.target.value;
+document.querySelector('#sky').oninput=e=>hemi.intensity=+e.target.value;
+function lightUpdate(){const a=THREE.MathUtils.degToRad(+document.querySelector('#sunAngle').value),e=THREE.MathUtils.degToRad(+document.querySelector('#sunElev').value);sun.position.set(Math.cos(a)*Math.cos(e),Math.sin(e),Math.sin(a)*Math.cos(e))}
+document.querySelector('#sunAngle').oninput=lightUpdate;document.querySelector('#sunElev').oninput=lightUpdate;
+document.querySelector('#rx').oninput=e=>group.rotation.x=THREE.MathUtils.degToRad(+e.target.value);
+document.querySelector('#ry').oninput=e=>group.rotation.y=THREE.MathUtils.degToRad(+e.target.value);
+document.querySelector('#zoom').oninput=e=>camera.position.z=+e.target.value;
+
+document.querySelector('#hdri').onchange=e=>{
+ const f=e.target.files[0];if(!f)return;
+ document.querySelector('#hdriName').textContent=f.name;
+ if(f.type.startsWith('image/'))loader.load(URL.createObjectURL(f),t=>{t.mapping=THREE.EquirectangularReflectionMapping;scene.background=t;scene.environment=t});
+};
+
+async function presentation(){
+ document.body.classList.add('presentation');
+ try{await document.documentElement.requestFullscreen()}catch{}
+}
+async function stopPresentation(){
+ document.body.classList.remove('presentation');
+ if(document.fullscreenElement)try{await document.exitFullscreen()}catch{}
+}
+async function toggleG(){document.body.classList.contains('presentation')?await stopPresentation():await presentation()}
+document.addEventListener('keydown',e=>{if(e.key.toLowerCase()==='g'&&!e.repeat)toggleG()});
+document.querySelector('#record').onclick=toggleG;
+
+document.querySelector('#save').onclick=()=>{
+ renderer.render(scene,camera);
+ const a=document.createElement('a');a.download='MaterialStudio_'+Date.now()+'.png';a.href=renderer.domElement.toDataURL('image/png');a.click();
+};
+
+window.addEventListener('resize',()=>{
+ const w=viewport.clientWidth,h=viewport.clientHeight;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h);
+});
+build();lightUpdate();
+function loop(t){requestAnimationFrame(loop);controls.update();if(auto)group.rotation.y+=.006;renderer.render(scene,camera)}loop();
+</script>
+</body>
+</html>
